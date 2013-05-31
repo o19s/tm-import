@@ -55,7 +55,9 @@ type Classification struct {
   PrimaryCode string `xml:"classification>primary-code"`
 }
 
-const BATCHSIZE = 100
+const BATCHSIZE = 10
+const WEBPOSTERS = 20
+const XMLPROCESSORS = 5
 
 // wait, aren't globals evil?
 var inputFile = flag.String("infile", "enwiki-latest-pages-articles.xml", "Input file path")
@@ -66,6 +68,7 @@ var inputServer = flag.String("server", "http://localhost", "Where are we puttin
 var status = make(chan string)
 var post_capacitor = make(chan string)
 var ready_to_ship = make(chan string)
+var case_files = make(chan string)
 
 func main() {
   flag.Parse()
@@ -80,17 +83,21 @@ func main() {
 
   var waitGroup sync.WaitGroup
 
+  waitGroup.Add(1) //forcing the main to not close, this is very clumsy
   go keepTrack()
-  for i := 0; i < 10; i++ {
+  for i := 0; i <= WEBPOSTERS; i++ {
     go toTheServer()
   }
+
+  for i := 0; i <= XMLPROCESSORS; i++ {
+    go processCaseFiles()
+  }
+
   go bufferHttp()
 
   for _,name := range files {
     full_name := filepath.Join(*inputFolder, name)
-    fmt.Println("Processing file:", full_name)
-    waitGroup.Add(1)
-    go processCaseFile(full_name, &waitGroup)
+    case_files <- full_name
   }
 
   waitGroup.Wait() // wait for all our goroutines to finish
@@ -98,20 +105,27 @@ func main() {
 
 // bundle postable json casefiles into arrays of BATCHSIZE elements
 func bufferHttp() {
+  var buffered_casefiles []string // they have already been converted to json stings by this point
   for {
     json := <-post_capacitor
-    var buffered_casefiles []string // they have already been converted to json stings by this point
-    for i := 0; i<= BATCHSIZE; i++ {
-      buffered_casefiles = append(buffered_casefiles, json)
+    buffered_casefiles = append(buffered_casefiles, json)
+
+    // This approach leaves scraps on the table
+    // we need a signaliing mechanism for when all work is done
+    // so we can push the remander to the server
+    if len(buffered_casefiles) >= BATCHSIZE {
+
+      if *inputLoud == true {
+        fmt.Println("another batch ready to ship!")
+      }
+      status <- "batch"
+
+      ready_to_ship <- strings.Join(buffered_casefiles, ",")
+
+      buffered_casefiles = []string{}
     }
 
-    if *inputLoud == true {
-      fmt.Println("another batch ready to ship!")
-    }
 
-    status <- "batch"
-
-    ready_to_ship <- strings.Join(buffered_casefiles, ",")
   }
 
 }
@@ -183,8 +197,17 @@ func findTMFiles(folder string) (files []string, err error) {
   return
 }
 
-func processCaseFile(file string, waitGroup *sync.WaitGroup) (total int) {
-  defer waitGroup.Done()
+func processCaseFiles() {
+
+  for {
+    file := <-case_files
+
+    processCaseFile(file)
+  }
+}
+
+
+func processCaseFile(file string) {
 
   xmlFile, err := os.Open(file)
   if err != nil {
@@ -196,8 +219,6 @@ func processCaseFile(file string, waitGroup *sync.WaitGroup) (total int) {
   defer xmlFile.Close()
   decoder := xml.NewDecoder(xmlFile)
 
-
-  total = 0
 
   var inElement string
 
@@ -219,10 +240,8 @@ func processCaseFile(file string, waitGroup *sync.WaitGroup) (total int) {
         if err != nil {
           fmt.Printf("Error opening file:", err)
         }
-        total++
         status <- "add:"
-        waitGroup.Add(1)
-        go processCase(cf, waitGroup, status)
+        go processCase(cf)
       }
 
     default:
@@ -233,8 +252,7 @@ func processCaseFile(file string, waitGroup *sync.WaitGroup) (total int) {
   return
 }
 
-func processCase(cf Casefile, wg *sync.WaitGroup, status chan string) {
-  defer wg.Done() // we are keeping track of how many of these are run so we don't exit early
+func processCase(cf Casefile) {
   
   j, err := json.Marshal(cf)
 
