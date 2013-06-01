@@ -55,9 +55,9 @@ type Classification struct {
   PrimaryCode string `xml:"classification>primary-code"`
 }
 
-const BATCHSIZE = 10
+const BATCHSIZE = 1000
 const WEBPOSTERS = 20
-const XMLPROCESSORS = 5
+const XMLPROCESSORS = 1
 
 // wait, aren't globals evil?
 var inputFile = flag.String("infile", "enwiki-latest-pages-articles.xml", "Input file path")
@@ -146,9 +146,9 @@ func keepTrack() {
         os.Stdout.Write([]byte("\033[2J"))
         os.Stdout.Write([]byte("\033[0;0H"))
         fmt.Printf("total: \033[1m%d\033[0m complete:  \033[1m%d \033[0m", total, finished)
-        fmt.Printf("total batches: \033[1m%d\033[0m complete:  \033[1m%d \033[0m\n", batched, sent)
+        fmt.Printf("total batched docs: \033[1m%d\033[0m posted docs:  \033[1m%d \033[0m\n", (batched * BATCHSIZE), (sent * BATCHSIZE))
         timer := now.Sub(start)
-        fmt.Printf("\nticks: \033[1m%v\033[0m Processed Docs/Second:\033[1m%f\033[0m Batches/Second:\033[1m%f\033[0m", timer, ( float64(finished) / timer.Seconds()), ( float64(sent)  / timer.Seconds()))
+        fmt.Printf("\nticks: \033[1m%v\033[0m Processed Docs/Second:\033[1m%f\033[0m Posted Docs/Second:\033[1m%f\033[0m", timer, ( float64(finished) / timer.Seconds()), ( float64(sent * BATCHSIZE)  / timer.Seconds()))
 
         fmt.Println("\n\033[1mOpen Files\033[0m")
         for _,name := range open_files {
