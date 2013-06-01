@@ -275,8 +275,8 @@ func dateFromTMString(tm_date string) (result string){
   runes := []rune(tm_date)
 
   //check for bad dates from the PTO
-  if string(runes[0]) == "A" {
-    return ""
+  if len(tm_date) < 8 {
+    return
   }
   return string(runes[0:4]) + "-" + string(runes[4:6]) + "-" + string(runes[6:8])
 }
