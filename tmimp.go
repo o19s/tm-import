@@ -17,19 +17,20 @@ type Casefile struct {
   XMLName xml.Name `xml:"case-file" json:"-"`
   SerialNumber    string    `xml:"serial-number" json:"id"`
   RegistratioNumber  string `xml:"registration-number"`
-  TransactionDate string `xml:"transaction-date"`
-  FilingDate string `xml:"case-file-header>filing-date"`
+  TransactionDate string `xml:"transaction-date" json:"TransactionDate_dt"`
+  FilingDate string `xml:"case-file-header>filing-date" json:"FilingDate_dt"`
   StatusCode string `xml:"case-file-header>status-code"`
-  StatusDate string `xml:"case-file-header>status-date"`
+  StatusDate string `xml:"case-file-header>status-date" json:"StatusDate_dt"`
   MarkIdentification string `xml:"case-file-header>mark-identification"`
   MarkDrawingCode string `xml:"case-file-header>mark-drawing-code"`
-  AttorneyName string `xml:"attorney-name"`
+  AttorneyName string `xml:"case-file-header>attorney-name"`
   CaseFileStatements []FileStatements `xml:"case-file-statements" json:"-"`
-  FlatCaseFileStatements string `json="CaseFileStatements_t"`
+  FlatCaseFileStatements string `json:"caseFileStatements_t"`
   CaseFileEventStatements []FileEventStatements `xml:"case-file-event-statements" json:"-"`
   Classifications []Classification `xml:"classifications" json:"-"`
   FlatClassifications string `xml:"-" json:"classifications"`
   Correspondent []string `xml:"correspondent>address-"  json:"-"`
+  FlatCorrespondent string `json:"correspondent"`
 }
 
 type FileStatements struct {
@@ -62,14 +63,14 @@ const WEBPOSTERS = 20
 const XMLPROCESSORS = 1
 
 // wait, aren't globals evil?
-var inputFile = flag.String("infile", "enwiki-latest-pages-articles.xml", "Input file path")
 var inputFolder = flag.String("folder", "Downloads", "Input file folder path")
 var inputLoud = flag.Bool("loud", false, "extra output informaiton")
+var inputFake = flag.Bool("fake-it", false, "do everything but posting to the server")
 var inputServer = flag.String("server", "http://localhost", "Where are we putting these records")
 
 var status = make(chan string)
 var post_capacitor = make(chan string)
-var ready_to_ship = make(chan string)
+var ready_to_ship = make(chan string, 5)
 var case_files = make(chan string)
 var wg sync.WaitGroup
 
@@ -77,8 +78,7 @@ func main() {
   flag.Parse()
 
   fmt.Println(runtime.GOMAXPROCS(runtime.NumCPU()))
-  //total := processCaseFile(*inputFile)
-  //fmt.Printf("Total cases: %d \n", total)
+
   files, err := findTMFiles(*inputFolder)
   if err != nil {
     fmt.Println("Error reading folder:", err)
@@ -127,11 +127,9 @@ func bufferHttp() {
 
       buffered_casefiles = []string{}
     }
-
-
   }
-
 }
+
 func keepTrack() {
   total := 0
   finished := 0
@@ -179,8 +177,6 @@ func keepTrack() {
     default:
       fmt.Println("Unknown status:", sig)
     }
-
-
   }
 }
 
@@ -257,6 +253,10 @@ func processCaseFile(file string) {
         }
         cf.FlatClassifications = fileClassifications
         cf.FlatCaseFileStatements = fileStatements
+        cf.FilingDate = dateFromTMString(cf.FilingDate)
+        cf.TransactionDate = dateFromTMString(cf.TransactionDate)
+        cf.StatusDate = dateFromTMString(cf.StatusDate)
+        cf.FlatCorrespondent = strings.Join(cf.Correspondent, " ")
         go processCase(cf)
       }
 
@@ -268,6 +268,18 @@ func processCaseFile(file string) {
   return
 }
 
+// this really should be in a supporting library as it's specific to Trademark data
+//
+// convert a TM date 20120101 to a standard data 2012-01-01
+func dateFromTMString(tm_date string) (result string){
+  runes := []rune(tm_date)
+
+  //check for bad dates from the PTO
+  if string(runes[0]) == "A" {
+    return ""
+  }
+  return string(runes[0:4]) + "-" + string(runes[4:6]) + "-" + string(runes[6:8])
+}
 // processCase converts a caseFile struct to a json string
 func processCase(cf Casefile) {
 
@@ -295,26 +307,28 @@ func toTheServer() {
 }
 
 func httpPost(j string) {
-  client := &http.Client{}
   body_array := []string{`{"docs":[`,string(j), "]}"}
   body := strings.Join(body_array, "")
   if *inputLoud == true {
     fmt.Println("About to POST:", string(body))
   }
-  req, err := http.NewRequest("POST", *inputServer, strings.NewReader(body))
+  if *inputFake == false{
 
-  req.Header.Add("Content-type", "application/json")
+    client := &http.Client{}
+    req, err := http.NewRequest("POST", *inputServer, strings.NewReader(body))
 
-  req.SetBasicAuth("administrator", "foo")
+    req.Header.Add("Content-type", "application/json")
 
-  resp, err := client.Do(req)
-  if err != nil {
-    fmt.Println("Error posting to LWBD:", err)
-    return
+    req.SetBasicAuth("administrator", "foo")
+
+    resp, err := client.Do(req)
+    defer resp.Body.Close()
+    if err != nil {
+      fmt.Println("Error posting to LWBD:", err)
+      status <-"sent:failed"
+      return
+    }
   }
-  defer resp.Body.Close()
-
-
 
   status <- "sent:"
 }
