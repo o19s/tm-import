@@ -25,8 +25,10 @@ type Casefile struct {
   MarkDrawingCode string `xml:"case-file-header>mark-drawing-code"`
   AttorneyName string `xml:"attorney-name"`
   CaseFileStatements []FileStatements `xml:"case-file-statements" json:"-"`
+  FlatCaseFileStatements string `json="CaseFileStatements_t"`
   CaseFileEventStatements []FileEventStatements `xml:"case-file-event-statements" json:"-"`
   Classifications []Classification `xml:"classifications" json:"-"`
+  FlatClassifications string `xml:"-" json:"classifications"`
   Correspondent []string `xml:"correspondent>address-"  json:"-"`
 }
 
@@ -69,6 +71,7 @@ var status = make(chan string)
 var post_capacitor = make(chan string)
 var ready_to_ship = make(chan string)
 var case_files = make(chan string)
+var wg sync.WaitGroup
 
 func main() {
   flag.Parse()
@@ -81,26 +84,26 @@ func main() {
     fmt.Println("Error reading folder:", err)
   }
 
-  var waitGroup sync.WaitGroup
-
-  waitGroup.Add(1) //forcing the main to not close, this is very clumsy
   go keepTrack()
   for i := 0; i <= WEBPOSTERS; i++ {
+    wg.Add(1)
     go toTheServer()
   }
 
   for i := 0; i <= XMLPROCESSORS; i++ {
+    wg.Add(1)
     go processCaseFiles()
   }
 
+  wg.Add(1)
   go bufferHttp()
 
   for _,name := range files {
     full_name := filepath.Join(*inputFolder, name)
     case_files <- full_name
   }
-
-  waitGroup.Wait() // wait for all our goroutines to finish
+  close(case_files) // close the case_files channel, signalling a shutdown of the xmlParsers
+  wg.Wait() // wait for all our goroutines to finish
 }
 
 // bundle postable json casefiles into arrays of BATCHSIZE elements
@@ -198,15 +201,17 @@ func findTMFiles(folder string) (files []string, err error) {
 }
 
 func processCaseFiles() {
-
+  defer wg.Done() // don't hold execution closing after we are done
   for {
-    file := <-case_files
-
+    file, more := <-case_files
+    if more == false {
+      break
+    }
     processCaseFile(file)
   }
 }
 
-
+// processCaseFile extracts case_file information from the xml doc
 func processCaseFile(file string) {
 
   xmlFile, err := os.Open(file)
@@ -241,6 +246,17 @@ func processCaseFile(file string) {
           fmt.Printf("Error opening file:", err)
         }
         status <- "add:"
+        fileStatements := ""
+        fileClassifications := ""
+        for _, fs := range cf.CaseFileStatements {
+          fileStatements = fileStatements +  " " + fs.Text
+        }
+        for _, cl := range cf.Classifications {
+          fileClassifications = fileClassifications +  " " + strings.Join(cl.UsCode, " ")
+          fileClassifications = fileClassifications +  " " + strings.Join(cl.InternationalCode, " ")
+        }
+        cf.FlatClassifications = fileClassifications
+        cf.FlatCaseFileStatements = fileStatements
         go processCase(cf)
       }
 
@@ -252,8 +268,9 @@ func processCaseFile(file string) {
   return
 }
 
+// processCase converts a caseFile struct to a json string
 func processCase(cf Casefile) {
-  
+
   j, err := json.Marshal(cf)
 
   if err != nil {
@@ -268,6 +285,8 @@ func processCase(cf Casefile) {
 // grab our batches of case files and send them to the server!
 // this function monitors the shipping channel and dispatches posting jobs
 func toTheServer() {
+  defer wg.Done()
+
   for {
     casefile_set := <-ready_to_ship
     httpPost(casefile_set)
